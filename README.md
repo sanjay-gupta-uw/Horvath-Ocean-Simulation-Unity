@@ -4,11 +4,7 @@ Real-Time Spectral Ocean (Unity) — Work-in-progress ocean rendering that sampl
 
 This project was developed for fun to study rendering complex phenomena on the GPU. This is still a work on progress, but the scene renders the moving ocean. Essentially, the algorithm works as follows: given a 2D plane of points, we can displace each point's y-coordinate in the vertex shader according to a height texture generated each frame representing the ocean height field (this texture is tile-able -> maps any (x,z)-coordinates).
 
-<video controls playsinline muted loop width="100%">
-  <source src="Videos/DisplacedMesh.mp4" type="video/mp4">
-  Your browser doesn’t support embedded videos. Here’s a
-  <a href="Videos/DisplacedMesh.mp4">link to the video</a>.
-</video>
+![Demo](Images/demo.gif)
 
 ## Textures
 
