@@ -1,0 +1,135 @@
+#pragma kernel BuildKGrid
+#pragma kernel BuildH0Tex
+
+#define G 9.81
+#define PI 3.14159265359
+#define SURFACE_TENSION 0.072   // N/m (fresh water at ~25C)
+#define WATER_DENSITY 998.2  // kg/m^3
+#define SURFACE_TENSION_BY_WATER_DENSITY SURFACE_TENSION / WATER_DENSITY
+
+float alpha;   // e.g., 0.076 * pow(U*U/(G*Fetch), 0.22)
+float gamma;   // peak enhancement, ~3.3 typical
+float dispersion_peak; // peak frequency, e.g., 22 * pow(G*G/(U*U*U), 1/3)
+float L; // length scale for normalization (e.g., 1000m for ocean)
+
+uint OceanDepth;
+uint Size;
+
+// Cutoff values for wave numbers
+float LowCutoff;
+float HighCutoff;
+
+// pass noise texture for random numbers
+Texture2D<float2> NoiseTex;
+
+RWTexture2D<float2> InitGrid;
+RWTexture2D<float4> WaveTex;
+
+// JONSWAP in angular frequency domain
+float JONSWAP(float dispersion)
+{
+    // σ is piecewise
+    float sigma = (dispersion <= dispersion_peak) ? 0.07 : 0.09;
+
+    // "r" shape factor for the peak enhancement
+    float r = exp(-pow((dispersion - dispersion_peak), 2) / (2.0 * pow(sigma * dispersion_peak, 2)));
+
+    // S(ω) [m^2 s]   (note: 5/4 = 1.25)
+    float base = alpha * (G * G) * pow(dispersion, -5.0) * exp(-1.25 * pow(dispersion_peak / dispersion, 4.0));
+    return base * pow(gamma, r);
+}
+
+float2 WaveVector(float2 pos)
+{
+    float halfN = Size / 2;
+    float k_x = 2 * PI * (pos.x - halfN) / L;
+    float k_z = 2 * PI * (pos.y - halfN) / L;
+    float2 k = float2(k_x, k_z);
+
+    if (length(k) == 0)
+    {
+        k.x = 0.0001;
+        k.y = 0.0001;
+    }
+    
+    return k;
+}
+
+// pack the derivative in the y component
+float WaveDispersion(float2 k)
+{
+    return sqrt(G * length(k));
+}
+
+float DispersionDerivative(float2 k)
+{
+    return G / (2 * sqrt(G * length(k)) );
+}
+
+float ComputeSpectrum(float2 k)
+{
+    // TODO: Directional spreading function D(θ) -> S(k, θ) = S(k) * D(θ)
+    // S(ω)
+    float S = JONSWAP(WaveDispersion(k));
+    float dw_dk = DispersionDerivative(k);
+    float km = length(k);
+
+    // S(k) = S(w, θ) * dw/dk / k   
+    float Sk = S * dw_dk / km;
+    return Sk;
+}
+
+
+float2 ComputeFourierCoefficients(float2 k, uint2 id)
+{
+    float dk = 2 * PI / L; // interval between samples in k-space
+
+    // S(ω)
+    float Sk = ComputeSpectrum(k);
+    
+    // Box-Muller transform to get normally distributed random numbers
+    float2 rand = NoiseTex[id];
+    // float2 rand = float2(1,1);
+
+    float2 h0 = rand * sqrt(2.0 * Sk * dk * dk); // Fourier coefficient at t=0
+    return h0;
+
+}
+
+
+[numthreads(8,8,1)]
+void BuildKGrid (uint3 id : SV_DispatchThreadID)
+{
+    uint W, H;
+    InitGrid.GetDimensions(W, H);
+    if (id.x >= W || id.y >= H) return;
+
+    float2 k = WaveVector(id.xy);
+    float kLength = length(k);
+    
+    if(kLength > LowCutoff && kLength < HighCutoff)
+    {
+        float2 h0 = ComputeFourierCoefficients(k, id.xy);
+        InitGrid[id.xy] = float2(h0);
+        WaveTex[id.xy] = float4(k.x, k.y, WaveDispersion(k), 1);
+    }
+    else
+    {
+        InitGrid[id.xy] = float2(0, 0);
+        WaveTex[id.xy] = float4(k.x, k.y, 1, 1);
+    }
+
+}
+
+RWTexture2D<float4> h0Tex; // RG: real, imag components of h0, BA: real, imag components of h0(-k)
+[numthreads(8,8,1)]
+void BuildH0Tex(uint3 id : SV_DispatchThreadID)
+{
+    uint W, H;
+    h0Tex.GetDimensions(W, H);
+    if (id.x >= W || id.y >= H) return;
+
+    float2 h0 = InitGrid[id.xy];
+    float2 h0_minusk = InitGrid[uint2((W - id.x) % W, (H - id.y) % H)];
+    h0Tex[id.xy] = float4(h0, float2(1, -1) * h0_minusk);
+}

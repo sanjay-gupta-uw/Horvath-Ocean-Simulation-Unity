@@ -1,0 +1,42 @@
+#pragma kernel EvolveSpectrum
+
+float Time; // simulation time
+
+// pass noise texture for random numbers
+Texture2D<float4> h0Tex; // RG: real, imag components of h0, BA: real, imag components of h0(-k)
+Texture2D<float4> WaveTex; // RG: real, imag components of h(k,t), BA: real, imag components of h(-k,t)
+RWTexture2D<float4> TimeFreqTex; // R: omega(k), G: -omega(k)
+
+float2 Euler(float x)
+{
+    return float2(cos(x), sin(x));
+}
+
+float2 ComplexMul(float2 a, float2 b)
+{
+    return float2(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x);
+}
+
+[numthreads(8,8,1)]
+void EvolveSpectrum(uint3 id : SV_DispatchThreadID)
+{
+    uint W, H;
+    h0Tex.GetDimensions(W, H);
+    if (id.x >= W || id.y >= H) return;
+
+    // float2 k = WaveTex[id.xy].xy;
+    float dispersion = WaveTex[id.xy].z;
+
+
+    // fetch h0 and h0(-k)
+    float2 h0 = h0Tex[id.xy].xy;
+    float2 h0_minusk = h0Tex[id.xy].zw; 
+
+    float phase = dispersion * Time;
+    float2 exp_iwt = Euler(phase);
+    float2 exp_minus_iwt = Euler(-phase);
+
+    float2 hkt = ComplexMul(h0, exp_iwt) + ComplexMul(h0_minusk, exp_minus_iwt);
+
+    TimeFreqTex[id.xy] = float4(hkt.xy, 0, 1);
+}
