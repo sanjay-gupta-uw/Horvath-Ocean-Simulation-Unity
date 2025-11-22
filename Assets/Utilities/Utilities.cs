@@ -22,6 +22,28 @@ public static class Utilities
         rt.Create();
         return rt;
     }
+    public static Texture2D GenerateBoxMullerTexture(int size)
+    {
+        Texture2D noiseTex = new Texture2D(size, size, TextureFormat.RGFloat, false);
+        noiseTex.filterMode = FilterMode.Point;
+        noiseTex.wrapMode = TextureWrapMode.Repeat;
+
+        for (int y = 0; y < size; y++)
+        {
+            for (int x = 0; x < size; x++)
+            {
+                // Box-Muller transform
+                float u1 = Random.value;
+                float u2 = Random.value;
+                float mag = Mathf.Sqrt(-2.0f * Mathf.Log(u1));
+                float z0 = mag * Mathf.Cos(2.0f * Mathf.PI * u2);
+                float z1 = mag * Mathf.Sin(2.0f * Mathf.PI * u2);
+                noiseTex.SetPixel(x, y, new Color(z0, z1, 0));
+            }
+        }
+        noiseTex.Apply();
+        return noiseTex;
+    }
 
     public static void PrintTexture(RenderTexture renderTexture)
     {

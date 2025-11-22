@@ -1,7 +1,4 @@
-using System;
-using UnityEditor.ShaderGraph.Internal;
 using UnityEngine;
-using UnityEngine.UI;
 
 [System.Serializable]
 public class OceanSettings
@@ -27,95 +24,69 @@ public class WaveSettings
     [Min(0f)]
     public float _lengthScale = 512f; // k = 2pi / lengthScale -> smaller lengthScale means larger k values
 };
+
+[RequireComponent(typeof(MeshFilter), typeof(MeshRenderer))]
 public class OceanController : MonoBehaviour
 {
     [Header("Grid")]
-
     [SerializeField] public OceanSettings oceanSettings = new OceanSettings();
     [SerializeField] public WaveSettings waveSettings = new WaveSettings();
 
+    [Header("Rendering")]
+    public Material oceanMaterial; // assign in inspector
+
     [Header("Compute")]
-    public ComputeShader H0kComputeShader; // assign BuildKGrid.compute
-    public ComputeShader TimeComputeShader; // assign SpectrumTime.compute
-    public ComputeShader FFTComputeShader; // assign FFT.compute
-    InitSpectrum initSpectrum;
-    TimeDependentSpectrum timeDependentSpectrum;
+    public ComputeShader H0kComputeShader;
+    public ComputeShader TimeComputeShader;
+    public ComputeShader FFTComputeShader;
+    public ComputeShader WrapperComputeShader;
 
-    [SerializeField] bool _showHeightmap = false;
-    MeshFilter _mf;
-    MeshRenderer _mr;
-    MaterialPropertyBlock _mpb;
-    [SerializeField] Material _oceanMat; // has HLSL shader attached
+    [SerializeField] DebugTextureQuad debugQuad;
 
+    WaveCascade cascade1;
+    FFT _fft;
     float time = 0f;
+
+    MeshFilter _meshFilter;
+    MeshRenderer _meshRenderer;
 
     void Awake()
     {
-        _mf = GetComponent<MeshFilter>();
-        _mr = GetComponent<MeshRenderer>();
-        _mpb = new MaterialPropertyBlock();
-    }
-    void OnValidate()
-    {
-        // Only sanitize values here
-        if (oceanSettings == null) oceanSettings = new OceanSettings();
-        if (waveSettings == null) waveSettings = new WaveSettings();
+        _meshFilter = GetComponent<MeshFilter>();
+        _meshRenderer = GetComponent<MeshRenderer>();
 
-        // clamp/snap
-        // adapted from: http://stackoverflow.com/questions/31997707/rounding-value-to-nearest-power-of-two
-        oceanSettings._size = Mathf.Max(8, Mathf.NextPowerOfTwo(oceanSettings._size));
-
-        if (waveSettings._highCutoff < waveSettings._lowCutoff)
-            waveSettings._highCutoff = waveSettings._lowCutoff;
-        waveSettings._lengthScale = Mathf.Max(0.001f, waveSettings._lengthScale);
-
-
-        if (!Application.isPlaying && oceanSettings._size > 1)
+        if (oceanMaterial != null)
         {
-            if (_mf == null)
-            {
-                _mf = GetComponent<MeshFilter>();
-                if (_mf == null) _mf = gameObject.AddComponent<MeshFilter>();
-            }
-
-            var gen = new OceanMeshGenerator();
-            Mesh mesh = gen.GenerateGrid(oceanSettings._size, oceanSettings._spacing);
-            _mf.sharedMesh = mesh; // use sharedMesh in editor to avoid leaks --> use mesh when displacing at runtime
+            _meshRenderer.sharedMaterial = oceanMaterial;
         }
     }
+
     void Start()
     {
+        // 1. Build FFT + cascade
+        _fft = new FFT(FFTComputeShader, oceanSettings._size);
+        cascade1 = new WaveCascade(oceanSettings,
+                                   waveSettings,
+                                   _fft,
+                                   H0kComputeShader,
+                                   TimeComputeShader,
+                                   WrapperComputeShader,
+                                   debugQuad);
+
+        // 2. Generate procedural grid mesh
         var gen = new OceanMeshGenerator();
         Mesh mesh = gen.GenerateGrid(oceanSettings._size, oceanSettings._spacing);
+        mesh.name = "OceanOceanMesh";
 
-        // this line causes code to crash
-        _mf.sharedMesh = mesh; // use sharedMesh in editor to avoid leaks --> use mesh when displacing at runtime
-
-        if (H0kComputeShader == null) { Debug.LogError("Assign H0kComputeShader"); return; }
-        initSpectrum = new InitSpectrum(oceanSettings, waveSettings, H0kComputeShader);
-        timeDependentSpectrum = new TimeDependentSpectrum(oceanSettings, TimeComputeShader, FFTComputeShader, initSpectrum._data.WaveTex, initSpectrum._data.h0Tex4f);
-        if (_showHeightmap)
-        {
-            var preview = FindFirstObjectByType<HeightmapPreview>();
-            if (preview != null)
-            {
-                preview.SetRenderTexture(timeDependentSpectrum.HeightMapRT);
-            }
-        }
+        // 3. Assign to MeshFilter so MeshRenderer can draw it
+        _meshFilter.sharedMesh = mesh;
+        oceanMaterial.SetTexture("_HeightMap", cascade1.HeightMap);
+        oceanMaterial.SetTexture("_NormalMap", cascade1.NormalMap);
     }
-
-    void OnDestroy() => initSpectrum?.Release();
 
     void Update()
     {
         time += Time.deltaTime;
-        timeDependentSpectrum.Update(time);
-
-        float tileLength = (oceanSettings._size - 1) * oceanSettings._spacing;
-        _mr.GetPropertyBlock(_mpb);
-        _mpb.SetTexture("_HeightTex", timeDependentSpectrum.HeightMapRT);    // RenderTexture
-        _mpb.SetFloat("_TileLength", tileLength);            // meters per tile side
-        _mpb.SetFloat("_Amplitude", 1.0f);                                 // meters per tex unit; tweak
-        _mr.SetPropertyBlock(_mpb);
+        cascade1.Update(time);
     }
 }
